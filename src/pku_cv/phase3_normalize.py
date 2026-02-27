@@ -72,17 +72,23 @@ def _normalize_field(
     review_rows: List[Dict[str, object]],
     row_key: str,
     field_name: str,
+    value_cache: Dict[str, str],
 ) -> str:
     source_value = (source_value or "").strip()
     if not source_value:
         return ""
 
+    if source_value in value_cache:
+        return value_cache[source_value]
+
     mapped = _map_deterministic(source_value)
     if mapped is not None:
+        value_cache[source_value] = mapped
         return mapped
 
     abbr, confidence, reason = _map_with_deepseek(source_value, client)
     if abbr and confidence >= 0.8:
+        value_cache[source_value] = abbr
         return abbr
 
     review_rows.append(
@@ -96,6 +102,7 @@ def _normalize_field(
             "created_at": today_str(),
         }
     )
+    value_cache[source_value] = source_value
     return source_value
 
 
@@ -123,10 +130,11 @@ def run(limit: Optional[int] = None, resume: bool = True) -> None:
     client = DeepSeekClient()
     review_rows: List[Dict[str, object]] = []
     normalized_rows_new: List[Dict[str, object]] = []
+    value_cache: Dict[str, str] = {}
 
     for row in pending_rows:
         normalized = dict(row)
-        row_key = "|".join(
+        row_identity = "|".join(
             [
                 str(row.get("department_name_zh", "")),
                 str(row.get("school_name_zh", "")),
@@ -140,8 +148,9 @@ def run(limit: Optional[int] = None, resume: bool = True) -> None:
                 str(row.get(field, "")),
                 client=client,
                 review_rows=review_rows,
-                row_key=row_key,
+                row_key=row_identity,
                 field_name=field,
+                value_cache=value_cache,
             )
         normalized_rows_new.append(normalized)
 
