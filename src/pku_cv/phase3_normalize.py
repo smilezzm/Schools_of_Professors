@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
-from .config import ENRICHED_JSONL, NORMALIZATION_REVIEW_JSONL, NORMALIZED_JSONL
+from .config import (
+    ENRICHED_JSONL,
+    NORMALIZATION_REVIEW_JSONL,
+    NORMALIZED_JSONL,
+    UNIVERSITY_ALIAS_DICTIONARY_CSV,
+)
 from .deepseek_client import DeepSeekClient
-from .utils import parse_json_obj, read_jsonl, today_str, write_jsonl
+from .utils import parse_json_obj, read_csv_rows, read_jsonl, today_str, write_jsonl
 
 ALIAS_TO_STD: Dict[str, str] = {
     "北大": "PKU",
@@ -26,14 +32,28 @@ ALIAS_TO_STD: Dict[str, str] = {
 }
 
 
-def _map_deterministic(name: str) -> Optional[str]:
+@lru_cache(maxsize=1)
+def _load_alias_map() -> Dict[str, str]:
+    alias_map: Dict[str, str] = {}
+    if UNIVERSITY_ALIAS_DICTIONARY_CSV.exists():
+        for row in read_csv_rows(UNIVERSITY_ALIAS_DICTIONARY_CSV):
+            alias = str(row.get("alias", "")).strip()
+            abbr = str(row.get("canonical_abbr", "")).strip().upper()
+            if alias and abbr:
+                alias_map[alias] = abbr
+    for alias, abbr in ALIAS_TO_STD.items():
+        alias_map.setdefault(alias, abbr)
+    return alias_map
+
+
+def _map_deterministic(name: str, alias_map: Dict[str, str]) -> Optional[str]:
     text = (name or "").strip()
     if not text:
         return ""
-    if text in ALIAS_TO_STD:
-        return ALIAS_TO_STD[text]
+    if text in alias_map:
+        return alias_map[text]
 
-    for alias, standard in ALIAS_TO_STD.items():
+    for alias, standard in alias_map.items():
         if alias and alias in text:
             return standard
     return None
@@ -68,6 +88,7 @@ def _map_with_deepseek(name: str, client: DeepSeekClient) -> Tuple[str, float, s
 
 def _normalize_field(
     source_value: str,
+    alias_map: Dict[str, str],
     client: DeepSeekClient,
     review_rows: List[Dict[str, object]],
     row_key: str,
@@ -81,7 +102,7 @@ def _normalize_field(
     if source_value in value_cache:
         return value_cache[source_value]
 
-    mapped = _map_deterministic(source_value)
+    mapped = _map_deterministic(source_value, alias_map)
     if mapped is not None:
         value_cache[source_value] = mapped
         return mapped
@@ -128,6 +149,7 @@ def run(limit: Optional[int] = None, resume: bool = True) -> None:
     pending_rows = [row for row in rows if row_key(row) not in existing_keys] if resume else rows
 
     client = DeepSeekClient()
+    alias_map = _load_alias_map()
     review_rows: List[Dict[str, object]] = []
     normalized_rows_new: List[Dict[str, object]] = []
     value_cache: Dict[str, str] = {}
@@ -146,6 +168,7 @@ def run(limit: Optional[int] = None, resume: bool = True) -> None:
         for field in ["bs_school", "ms_school", "phd_school"]:
             normalized[field] = _normalize_field(
                 str(row.get(field, "")),
+                alias_map=alias_map,
                 client=client,
                 review_rows=review_rows,
                 row_key=row_identity,

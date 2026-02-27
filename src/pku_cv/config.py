@@ -8,6 +8,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 
 SCHOOLS_SEED_CSV = PROJECT_ROOT / "schools_seed.csv"
 PROFESSORS_TEMPLATE_CSV = PROJECT_ROOT / "professors_template.csv"
+UNIVERSITY_ALIAS_DICTIONARY_CSV = PROJECT_ROOT / "university_alias_dictionary.csv"
 
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
