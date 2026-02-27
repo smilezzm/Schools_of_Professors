@@ -479,8 +479,8 @@ def _click_next(page: Any) -> bool:
         if not target.is_visible():
             continue
         try:
-            target.click(timeout=2500)
-            page.wait_for_timeout(1300)
+            target.click(timeout=1200)
+            page.wait_for_timeout(500)
             return True
         except Exception:
             continue
@@ -535,9 +535,10 @@ def _click_next_and_wait_change(page: Any, previous_signature: str, timeout_ms: 
     if not _click_next_dynamic(page):
         return False
 
-    page.wait_for_timeout(800)
-    wait_slice = max(800, min(timeout_ms, 5000))
-    attempts = max(2, timeout_ms // wait_slice)
+    page.wait_for_timeout(350)
+    max_wait = max(1200, min(timeout_ms, 9000))
+    wait_slice = 900
+    attempts = max(2, max_wait // wait_slice)
 
     for _ in range(attempts):
         try:
@@ -549,7 +550,7 @@ def _click_next_and_wait_change(page: Any, previous_signature: str, timeout_ms: 
             current_signature = _extract_signature_from_page(page)
             if current_signature and current_signature != previous_signature:
                 return True
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(220)
 
     current_signature = _extract_signature_from_page(page)
     return bool(current_signature and current_signature != previous_signature)
@@ -586,17 +587,30 @@ def _discover_with_playwright(
                     f"Details: {' | '.join(launch_errors)}"
                 )
 
-        page = browser.new_page()
+        context = browser.new_context()
+        page = context.new_page()
+        page.route(
+            "**/*",
+            lambda route: route.abort()
+            if route.request.resource_type in {"image", "media", "font"}
+            else route.continue_(),
+        )
         page.on(
             "request",
             lambda req: queryteacher_urls.append(req.url)
             if "queryteacher.jsp" in str(req.url).lower()
             else None,
         )
-        page.goto(start_url, wait_until="networkidle", timeout=timeout * 1000)
-        page.wait_for_timeout(1200)
+        page.goto(start_url, wait_until="domcontentloaded", timeout=timeout * 1000)
+
+        probe_deadline_ms = min(timeout * 1000, 4500)
+        elapsed = 0
+        while elapsed < probe_deadline_ms and not queryteacher_urls:
+            page.wait_for_timeout(200)
+            elapsed += 200
 
         if queryteacher_urls: ## some sites(especially physics department) loads stuff via queryteacher.jsp. So special handling for that.
+            context.close()
             browser.close()
             query_url = queryteacher_urls[-1]
             return _discover_with_queryteacher_api(
@@ -610,6 +624,7 @@ def _discover_with_playwright(
             )
 
         if not _wait_for_rendered_name_nodes(page, timeout_ms=timeout * 1000):
+            context.close()
             browser.close()
             raise RuntimeError(f"Playwright loaded but no rendered teacher nodes found for: {start_url}")
 
@@ -619,6 +634,7 @@ def _discover_with_playwright(
         for page_index in range(1, max_pages_per_seed + 1):
             html = page.content()
             if _html_looks_unrendered(html):
+                context.close()
                 browser.close()
                 raise RuntimeError(
                     f"Detected unrendered template HTML on page {page_index} for: {page.url}"
@@ -654,9 +670,11 @@ def _discover_with_playwright(
                 break
 
             if not _wait_for_rendered_name_nodes(page, timeout_ms=timeout * 1000):
+                context.close()
                 browser.close()
                 raise RuntimeError(f"After clicking next, no rendered teacher nodes for: {page.url}")
 
+        context.close()
         browser.close()
 
     return rows
