@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -10,6 +11,51 @@ from bs4 import BeautifulSoup
 from .config import ENRICHED_JSONL, PROFESSOR_NAMES_JSONL
 from .deepseek_client import DeepSeekClient
 from .utils import parse_json_obj, read_jsonl, today_str, write_jsonl
+
+
+PROFILE_LINK_HINTS = [
+    "个人主页",
+    "个人简历",
+    "个人信息",
+    "个人简介",
+    "详细信息",
+    "详情",
+    "简历",
+    "主页",
+    "cv",
+    "resume",
+    "profile",
+]
+
+
+def _same_domain_or_subdomain(base_url: str, target_url: str) -> bool:
+    try:
+        base_host = (urlparse(base_url).hostname or "").lower()
+        target_host = (urlparse(target_url).hostname or "").lower()
+    except Exception:
+        return False
+    if not base_host or not target_host:
+        return False
+    return target_host == base_host or target_host.endswith("." + base_host)
+
+
+def _looks_like_profile_hint(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(hint in lowered for hint in PROFILE_LINK_HINTS)
+
+
+def _score_profile_link(text: str, href: str) -> int:
+    lowered = (str(text or "") + " " + str(href or "")).lower()
+    score = 0
+    if "个人主页" in lowered or "homepage" in lowered:
+        score += 5
+    if "简历" in lowered or "cv" in lowered or "resume" in lowered:
+        score += 4
+    if "详细" in lowered or "详情" in lowered or "profile" in lowered:
+        score += 2
+    return score
 
 
 def _completion_status(row: Dict[str, object]) -> str:
@@ -70,6 +116,80 @@ def _fetch_profile_text(profile_url: str, timeout: int = 20) -> str:
     return text[:12000]
 
 
+def _fetch_profile_page(profile_url: str, timeout: int = 20) -> Tuple[str, BeautifulSoup, str]:
+    url = str(profile_url or "").strip()
+    empty_soup = BeautifulSoup("", "html.parser")
+    if not url:
+        return "", empty_soup, ""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
+    try:
+        response = requests.get(url, timeout=timeout, headers=headers)
+        response.raise_for_status()
+        response.encoding = response.apparent_encoding or response.encoding
+    except Exception:
+        return "", empty_soup, url
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    for tag in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
+        tag.extract()
+    text = soup.get_text("\n", strip=True)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text[:12000], soup, str(response.url or url)
+
+
+def _discover_secondary_profile_links(soup: BeautifulSoup, base_url: str, max_links: int = 2) -> List[str]:
+    scored: List[Tuple[int, str]] = []
+    for anchor in soup.find_all("a"):
+        link_text = str(anchor.get_text(" ", strip=True) or "")
+        href = str(anchor.get("href") or "").strip()
+        if not href:
+            continue
+        absolute = urljoin(base_url, href)
+        if not absolute.startswith("http"):
+            continue
+        if not _same_domain_or_subdomain(base_url, absolute):
+            continue
+        if not _looks_like_profile_hint(link_text) and not _looks_like_profile_hint(href):
+            continue
+        score = _score_profile_link(link_text, href)
+        scored.append((score, absolute))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    selected: List[str] = []
+    seen: Set[str] = set()
+    for _, url in scored:
+        if url in seen:
+            continue
+        seen.add(url)
+        selected.append(url)
+        if len(selected) >= max_links:
+            break
+    return selected
+
+
+def _fetch_profile_text_with_secondary_links(profile_url: str) -> str:
+    primary_text, soup, resolved_url = _fetch_profile_page(profile_url)
+    combined_parts: List[str] = []
+    if primary_text:
+        combined_parts.append(primary_text)
+    if not resolved_url:
+        return "\n".join(combined_parts)[:16000]
+
+    secondary_links = _discover_secondary_profile_links(soup, resolved_url, max_links=2)
+    for link in secondary_links:
+        secondary_text, _, _ = _fetch_profile_page(link)
+        if secondary_text:
+            combined_parts.append(secondary_text)
+
+    combined = "\n\n".join(part for part in combined_parts if part)
+    return combined[:16000]
+
+
 def _apply_payload(result: Dict[str, object], payload: Dict[str, object], fill_only_missing: bool) -> None:
     for key in [
         "name_en",
@@ -108,7 +228,7 @@ def _enrich_one(
         return result
 
     identity = result["name_zh"] or result["name_en"]
-    profile_text = _fetch_profile_text(str(result.get("profile_url", "")))
+    profile_text = _fetch_profile_text_with_secondary_links(str(result.get("profile_url", "")))
     if profile_text:
         profile_prompt = (
             "你会收到某位教师个人主页的正文文本，请仅基于这些文本抽取字段。"
