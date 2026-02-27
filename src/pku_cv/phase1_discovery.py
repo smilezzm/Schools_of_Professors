@@ -83,6 +83,8 @@ EN_STOPWORDS = {
     "group",
     "navigation",
 }
+JS_URL_RE = re.compile(r"(?:window\.location(?:\.href)?|location\.href|open)\s*\(??\s*['\"]([^'\"]+)['\"]")
+QUOTED_URL_RE = re.compile(r"['\"]((?:https?://|/|\.\./|\./)[^'\"\s<>]+)['\"]")
 NEXT_SELECTORS = [
     "#pageBarNextPageIdu12",
     "a:has-text('下一页')",
@@ -154,6 +156,63 @@ def _name_type(token: str) -> str:
     return ""
 
 
+def _normalize_url_candidate(raw_url: str, page_url: str) -> str:
+    url = (raw_url or "").strip()
+    if not url:
+        return ""
+    lower = url.lower()
+    if lower.startswith("javascript:") or lower.startswith("mailto:") or lower.startswith("tel:"):
+        return ""
+    if url in {"#", "#;", "#none"}:
+        return ""
+    return urljoin(page_url, url)
+
+
+def _extract_clickable_url_from_tag(tag: Any, page_url: str) -> str:
+    attrs = getattr(tag, "attrs", {}) or {}
+    for key in ["href", "data-href", "data-url", "data-link", "url", "link", "src"]:
+        value = attrs.get(key)
+        if isinstance(value, str):
+            normalized = _normalize_url_candidate(value, page_url)
+            if normalized:
+                return normalized
+
+    onclick = attrs.get("onclick")
+    if isinstance(onclick, str):
+        for regex in [JS_URL_RE, QUOTED_URL_RE]:
+            match = regex.search(onclick)
+            if not match:
+                continue
+            normalized = _normalize_url_candidate(match.group(1), page_url)
+            if normalized:
+                return normalized
+
+    return ""
+
+
+def _find_profile_url_for_name(soup: BeautifulSoup, name: str, page_url: str) -> str:
+    candidates: List[str] = []
+    for tag in soup.find_all(True):
+        text = _normalize_token(tag.get_text(" ", strip=True) or "")
+        if text != name and not (name in text and len(text) <= len(name) + 10):
+            continue
+
+        current = tag
+        depth = 0
+        while current is not None and depth <= 3:
+            url = _extract_clickable_url_from_tag(current, page_url)
+            if url:
+                candidates.append(url)
+                break
+            current = current.parent
+            depth += 1
+
+    for url in candidates:
+        if url:
+            return url
+    return ""
+
+
 def _collect_candidate_pairs(html: str, page_url: str) -> List[Tuple[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     pairs: List[Tuple[str, str]] = []
@@ -180,6 +239,13 @@ def _collect_candidate_pairs(html: str, page_url: str) -> List[Tuple[str, str]]:
     dedup_map: Dict[str, str] = {}
     for name, profile_url in pairs:
         if name not in dedup_map or (not dedup_map[name] and profile_url):
+            dedup_map[name] = profile_url
+
+    for name in list(dedup_map.keys()):
+        if dedup_map[name]:
+            continue
+        profile_url = _find_profile_url_for_name(soup, name, page_url)
+        if profile_url:
             dedup_map[name] = profile_url
     return sorted(dedup_map.items(), key=lambda item: item[0])
 
@@ -560,7 +626,7 @@ def run(
                     "school_name_zh": school_name_zh,
                     "name_zh": name if name_kind == "zh" else "",
                     "name_en": name if name_kind == "en" else "",
-                    "profile_url": "",
+                    "profile_url": candidate_map.get(name, ""),
                     "source": "phase1_discovery",
                     "crawl_date": today_str(),
                 }

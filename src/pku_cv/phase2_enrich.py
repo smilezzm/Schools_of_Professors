@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
 from typing import Dict, List, Optional
+
+import requests
+from bs4 import BeautifulSoup
 
 from .config import ENRICHED_JSONL, PROFESSOR_NAMES_JSONL
 from .deepseek_client import DeepSeekClient
@@ -24,7 +28,7 @@ def _default_enriched(row: Dict[str, object]) -> Dict[str, object]:
         "name_zh": row.get("name_zh", ""),
         "name_en": row.get("name_en", ""),
         "title": "",
-        "profile_url": "",
+        "profile_url": row.get("profile_url", ""),
         "bs_school": "",
         "ms_school": "",
         "phd_school": "",
@@ -35,31 +39,38 @@ def _default_enriched(row: Dict[str, object]) -> Dict[str, object]:
     }
 
 
-def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, object]:
-    result = _default_enriched(row)
-    if not client.enabled:
-        return result
+def _normalize_year(value: str) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"\b(19\d{2}|20\d{2})\b", text)
+    return match.group(1) if match else ""
 
-    identity = result["name_zh"] or result["name_en"]
-    prompt = (
-        "基于北京大学教师主页检索教师信息。"
-        "只输出纯文本JSON对象，字段完整："
-        "name_en,title,profile_url,bs_school,ms_school,phd_school,join_pku_year,notes。"
-        "如果不确定请留空字符串，不要编造。"
-        "profile_url 需要通过检索给出最可信的教师个人主页链接。"
-        "join_pku_year 只给出年份数字，不要其他文字。"
-        "bs_school/ms_school/phd_school 只给出学校名称，不要其他文字（如本科、学士等）。"
-        f"\n姓名: {identity}"
-        f"\n学部: {result['department_name_zh']}"
-        f"\n学院: {result['school_name_zh']}"
-    )
+
+def _fetch_profile_text(profile_url: str, timeout: int = 20) -> str:
+    url = str(profile_url or "").strip()
+    if not url:
+        return ""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
     try:
-        text = client.chat_json(prompt, temperature=0.05)
-        payload = parse_json_obj(text)
-    except Exception as exc:
-        result["notes"] = f"deepseek_error: {exc}"
-        return result
+        response = requests.get(url, timeout=timeout, headers=headers)
+        response.raise_for_status()
+        response.encoding = response.apparent_encoding or response.encoding
+    except Exception:
+        return ""
 
+    soup = BeautifulSoup(response.text, "html.parser")
+    for tag in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
+        tag.extract()
+    text = soup.get_text("\n", strip=True)
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text[:12000]
+
+
+def _apply_payload(result: Dict[str, object], payload: Dict[str, object], fill_only_missing: bool) -> None:
     for key in [
         "name_en",
         "title",
@@ -70,8 +81,79 @@ def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, obj
         "join_pku_year",
         "notes",
     ]:
-        value = payload.get(key, "")
-        result[key] = str(value).strip() if value is not None else ""
+        value = str(payload.get(key, "") or "").strip()
+        if fill_only_missing:
+            if not str(result.get(key, "") or "").strip() and value:
+                result[key] = value
+        else:
+            result[key] = value
+    result["join_pku_year"] = _normalize_year(str(result.get("join_pku_year", "")))
+
+
+def _needs_search_fallback(result: Dict[str, object]) -> bool:
+    return not (
+        str(result.get("bs_school", "")).strip()
+        and str(result.get("phd_school", "")).strip()
+        and str(result.get("join_pku_year", "")).strip()
+    )
+
+
+def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, object]:
+    result = _default_enriched(row)
+    if not client.enabled:
+        return result
+
+    identity = result["name_zh"] or result["name_en"]
+    profile_text = _fetch_profile_text(str(result.get("profile_url", "")))
+    if profile_text:
+        profile_prompt = (
+            "你会收到某位教师个人主页的正文文本，请仅基于这些文本抽取字段。"
+            "不能使用外部搜索，不能猜测。"
+            "\n只输出纯文本JSON对象，字段完整："
+            "name_en,title,profile_url,bs_school,ms_school,phd_school,join_pku_year,notes。"
+            "\n字段为空时用空字符串。"
+            f"\n姓名: {identity}"
+            f"\n学部: {result['department_name_zh']}"
+            f"\n学院: {result['school_name_zh']}"
+            f"\n主页URL: {result.get('profile_url', '')}"
+            f"\n主页正文:\n{profile_text}"
+        )
+        try:
+            profile_text_resp = client.chat_json(profile_prompt, temperature=0.0)
+            profile_payload = parse_json_obj(profile_text_resp)
+            _apply_payload(result, profile_payload, fill_only_missing=False)
+        except Exception as exc:
+            result["notes"] = f"profile_extract_error: {exc}"
+
+    if _needs_search_fallback(result):
+        prompt = (
+            "网络搜索北京大学相关学院教师主页或个人简历，检索这位北京大学教师信息。"
+            "优先补全缺失字段，不要覆盖已有且看似合理的信息。"
+            f"\n姓名: {identity}"
+            f"\n学部: {result['department_name_zh']}"
+            f"\n学院: {result['school_name_zh']}"
+            "\n只输出纯文本JSON对象，字段完整："
+            "name_en,title,profile_url,bs_school,ms_school,phd_school,join_pku_year,notes。"
+            "\n如果不确定请留空字符串，不要有任何编造！"
+            "\nbs_school/ms_school/phd_school仅写学校或机构名称。"
+            "\njoin_pku_year只保留4位年份。"
+            "\n当前已提取信息："
+            f"\nname_en={result.get('name_en','')}"
+            f"\ntitle={result.get('title','')}"
+            f"\nprofile_url={result.get('profile_url','')}"
+            f"\nbs_school={result.get('bs_school','')}"
+            f"\nms_school={result.get('ms_school','')}"
+            f"\nphd_school={result.get('phd_school','')}"
+            f"\njoin_pku_year={result.get('join_pku_year','')}"
+        )
+        try:
+            text = client.chat_json(prompt, temperature=0.05)
+            payload = parse_json_obj(text)
+            _apply_payload(result, payload, fill_only_missing=True)
+        except Exception as exc:
+            existing_notes = str(result.get("notes", "")).strip()
+            suffix = f"deepseek_error: {exc}"
+            result["notes"] = f"{existing_notes}; {suffix}" if existing_notes else suffix
 
     result["status"] = _completion_status(result)
     return result
