@@ -22,6 +22,7 @@ def _default_enriched(row: Dict[str, object]) -> Dict[str, object]:
         "school_name_zh": row.get("school_name_zh", ""),
         "name_zh": row.get("name_zh", ""),
         "name_en": row.get("name_en", ""),
+        "seed_faculty_list_url": row.get("seed_faculty_list_url", ""),
         "title": "",
         "profile_url": "",
         "bs_school": "",
@@ -41,16 +42,17 @@ def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, obj
 
     identity = result["name_zh"] or result["name_en"]
     prompt = (
-        "请基于北京大学教师主页检索信息，给出北京大学教师信息。"
-        "输出JSON对象，字段必须完整："
+        "基于北京大学教师主页检索教师信息。"
+        "只输出纯文本JSON对象，字段完整："
         "name_en,title,profile_url,bs_school,ms_school,phd_school,join_pku_year,notes。"
         "如果不确定请留空字符串，不要编造。"
-        "profile_url 需要通过检索给出最可信的教师个人主页或官方简介页面链接。"
+        "profile_url 需要通过检索给出最可信的教师个人主页链接。"
+        "join_pku_year 只给出年份数字，不要其他文字。"
+        "bs_school/ms_school/phd_school 只给出学校名称，不要其他文字（如本科、学士等）。"
         f"\n姓名: {identity}"
-        f"\n中文姓名: {result['name_zh']}"
-        f"\n英文姓名: {result['name_en']}"
         f"\n学部: {result['department_name_zh']}"
         f"\n学院: {result['school_name_zh']}"
+        f"\n学院教师列表参考URL: {result['seed_faculty_list_url']}"
     )
     try:
         text = client.chat_json(prompt, temperature=0.05)

@@ -483,6 +483,7 @@ def run(
                     "school_name_zh": school_name_zh,
                     "name_candidate": name,
                     "profile_url": profile_url,
+                    "seed_faculty_list_url": listing.get("seed_faculty_list_url", ""),
                     "html_path": html_path,
                     "listing_page_url": listing_url,
                     "seed_row_index": listing.get("seed_row_index"),
@@ -506,6 +507,7 @@ def run(
     write_jsonl(NAME_CANDIDATES_JSONL, candidate_rows)
 
     school_candidates: Dict[Tuple[str, str], Dict[str, str]] = defaultdict(dict)
+    school_seed_url_map: Dict[Tuple[str, str], str] = {}
     for row in candidate_rows:
         key = (
             str(row.get("department_name_zh") or ""),
@@ -513,9 +515,12 @@ def run(
         )
         name = str(row.get("name_candidate") or "").strip()
         profile_url = str(row.get("profile_url") or "").strip()
+        seed_faculty_list_url = str(row.get("seed_faculty_list_url") or "").strip()
         if not name:
             continue
         school_candidates[key].setdefault(name, profile_url)
+        if seed_faculty_list_url and key not in school_seed_url_map:
+            school_seed_url_map[key] = seed_faculty_list_url
 
     client = DeepSeekClient()
     if require_deepseek and not client.enabled:
@@ -561,6 +566,9 @@ def run(
                     "name_zh": name if name_kind == "zh" else "",
                     "name_en": name if name_kind == "en" else "",
                     "profile_url": "",
+                    "seed_faculty_list_url": school_seed_url_map.get(
+                        (department_name_zh, school_name_zh), ""
+                    ),
                     "source": "phase1_discovery",
                     "crawl_date": today_str(),
                 }
