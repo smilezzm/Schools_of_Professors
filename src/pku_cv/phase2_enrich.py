@@ -98,7 +98,11 @@ def _needs_search_fallback(result: Dict[str, object]) -> bool:
     )
 
 
-def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, object]:
+def _enrich_one(
+    row: Dict[str, object],
+    client: DeepSeekClient,
+    enable_web_search_fallback: bool = True,
+) -> Dict[str, object]:
     result = _default_enriched(row)
     if not client.enabled:
         return result
@@ -127,7 +131,7 @@ def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, obj
         except Exception as exc:
             result["notes"] = f"profile_extract_error: {exc}"
 
-    if _needs_search_fallback(result):
+    if enable_web_search_fallback and _needs_search_fallback(result):
         prompt = (
             "网络搜索北京大学相关学院教师主页或个人简历，检索这位北京大学教师信息。"
             "优先补全缺失字段，不要覆盖已有且看似合理的信息。"
@@ -157,6 +161,10 @@ def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, obj
             existing_notes = str(result.get("notes", "")).strip()
             suffix = f"deepseek_error: {exc}"
             result["notes"] = f"{existing_notes}; {suffix}" if existing_notes else suffix
+    elif (not enable_web_search_fallback) and _needs_search_fallback(result):
+        existing_notes = str(result.get("notes", "")).strip()
+        suffix = "web_search_disabled"
+        result["notes"] = f"{existing_notes}; {suffix}" if existing_notes else suffix
 
     result["status"] = _completion_status(result)
     return result
@@ -173,12 +181,17 @@ def _row_key(row: Dict[str, object]) -> str:
     )
 
 
-def _enrich_task(row: Dict[str, object]) -> Dict[str, object]:
+def _enrich_task(row: Dict[str, object], enable_web_search_fallback: bool) -> Dict[str, object]:
     client = DeepSeekClient()
-    return _enrich_one(row, client)
+    return _enrich_one(row, client, enable_web_search_fallback=enable_web_search_fallback)
 
 
-def run(limit: Optional[int] = None, resume: bool = True, workers: int = 3) -> None:
+def run(
+    limit: Optional[int] = None,
+    resume: bool = True,
+    workers: int = 3,
+    enable_web_search_fallback: bool = True,
+) -> None:
     names = read_jsonl(PROFESSOR_NAMES_JSONL)
 
     existing_rows = read_jsonl(ENRICHED_JSONL) if resume else []
@@ -193,10 +206,15 @@ def run(limit: Optional[int] = None, resume: bool = True, workers: int = 3) -> N
     if workers == 1:
         client = DeepSeekClient()
         for row in pending:
-            new_rows.append(_enrich_one(row, client))
+            new_rows.append(
+                _enrich_one(row, client, enable_web_search_fallback=enable_web_search_fallback)
+            )
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_map = {executor.submit(_enrich_task, row): row for row in pending}
+            future_map = {
+                executor.submit(_enrich_task, row, enable_web_search_fallback): row
+                for row in pending
+            }
             for future in as_completed(future_map):
                 seed_row = future_map[future]
                 try:

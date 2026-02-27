@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     p2.add_argument("--limit", type=int, default=0)
     p2.add_argument("--no-resume", action="store_true")
     p2.add_argument("--workers", type=int, default=3)
+    p2.add_argument("--no-web-search", action="store_true")
 
     p3 = sub.add_parser("phase3", help="Normalize school/institute names")
     p3.add_argument("--limit", type=int, default=0)
@@ -40,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     pall.add_argument("--no-resume", action="store_true")
     pall.add_argument("--require-deepseek", action="store_true")
     pall.add_argument("--workers", type=int, default=3)
+    pall.add_argument("--no-web-search", action="store_true")
 
     return parser
 
@@ -64,6 +66,7 @@ def main() -> None:
             limit=args.limit if args.limit > 0 else None,
             resume=not args.no_resume,
             workers=args.workers,
+            enable_web_search_fallback=not args.no_web_search,
         )
         return
 
@@ -91,6 +94,7 @@ def main() -> None:
             limit=args.limit if args.limit > 0 else None,
             resume=not args.no_resume,
             workers=args.workers,
+            enable_web_search_fallback=not args.no_web_search,
         )
         phase3_normalize.run(
             limit=args.limit if args.limit > 0 else None,
