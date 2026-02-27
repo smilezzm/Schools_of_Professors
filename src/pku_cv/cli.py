@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     p2 = sub.add_parser("phase2", help="Enrich professor records via DeepSeek web search")
     p2.add_argument("--limit", type=int, default=0)
     p2.add_argument("--no-resume", action="store_true")
+    p2.add_argument("--workers", type=int, default=3)
 
     p3 = sub.add_parser("phase3", help="Normalize school/institute names")
     p3.add_argument("--limit", type=int, default=0)
@@ -38,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     pall.add_argument("--limit", type=int, default=0)
     pall.add_argument("--no-resume", action="store_true")
     pall.add_argument("--require-deepseek", action="store_true")
+    pall.add_argument("--workers", type=int, default=3)
 
     return parser
 
@@ -61,6 +63,7 @@ def main() -> None:
         phase2_enrich.run(
             limit=args.limit if args.limit > 0 else None,
             resume=not args.no_resume,
+            workers=args.workers,
         )
         return
 
@@ -87,6 +90,7 @@ def main() -> None:
         phase2_enrich.run(
             limit=args.limit if args.limit > 0 else None,
             resume=not args.no_resume,
+            workers=args.workers,
         )
         phase3_normalize.run(
             limit=args.limit if args.limit > 0 else None,

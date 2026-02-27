@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
 from .config import ENRICHED_JSONL, PROFESSOR_NAMES_JSONL
@@ -89,7 +90,12 @@ def _row_key(row: Dict[str, object]) -> str:
     )
 
 
-def run(limit: Optional[int] = None, resume: bool = True) -> None:
+def _enrich_task(row: Dict[str, object]) -> Dict[str, object]:
+    client = DeepSeekClient()
+    return _enrich_one(row, client)
+
+
+def run(limit: Optional[int] = None, resume: bool = True, workers: int = 3) -> None:
     names = read_jsonl(PROFESSOR_NAMES_JSONL)
 
     existing_rows = read_jsonl(ENRICHED_JSONL) if resume else []
@@ -99,10 +105,24 @@ def run(limit: Optional[int] = None, resume: bool = True) -> None:
     if limit is not None and limit > 0:
         pending = pending[:limit]
 
-    client = DeepSeekClient()
+    workers = max(1, workers)
     new_rows: List[Dict[str, object]] = []
-    for row in pending:
-        new_rows.append(_enrich_one(row, client))
+    if workers == 1:
+        client = DeepSeekClient()
+        for row in pending:
+            new_rows.append(_enrich_one(row, client))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {executor.submit(_enrich_task, row): row for row in pending}
+            for future in as_completed(future_map):
+                seed_row = future_map[future]
+                try:
+                    new_rows.append(future.result())
+                except Exception as exc:
+                    fallback = _default_enriched(seed_row)
+                    fallback["notes"] = f"concurrent_enrich_error: {exc}"
+                    fallback["status"] = _completion_status(fallback)
+                    new_rows.append(fallback)
 
     merged_map = {_row_key(row): row for row in existing_rows}
     for row in new_rows:
