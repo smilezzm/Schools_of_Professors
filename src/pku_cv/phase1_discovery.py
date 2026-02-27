@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -118,6 +119,14 @@ NEXT_SELECTORS = [
     "span:has-text('下页')",
     "li:has-text('下一页')",
 ]
+RENDERED_NAME_SELECTORS = [
+    ".js-name a",
+    "h3 a",
+    ".teacher a",
+    ".faculty a",
+    "li:has(.js-name)",
+]
+UNRENDERED_TEMPLATE_MARKERS = ["{{:name}}", "{{:url}}", "Tsites_advance_search"]
 
 
 def _normalize_token(token: str) -> str:
@@ -330,6 +339,137 @@ def _extract_signature(html: str) -> str:
     return "|".join(names[:20])
 
 
+def _set_query_param(url: str, key: str, value: str) -> str:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query[key] = value
+    rebuilt = parsed._replace(query=urlencode(query, doseq=True))
+    return urlunparse(rebuilt)
+
+
+def _render_queryteacher_html(teacher_data: List[Dict[str, object]]) -> str:
+    rows: List[str] = ["<html><head><meta charset='utf-8'></head><body><ul class='teacher-list'>"]
+    for item in teacher_data:
+        name = str(item.get("name") or "").strip()
+        profile_url = str(item.get("url") or "").strip()
+        if not name:
+            continue
+        anchor = f"<a href=\"{profile_url}\">{name}</a>" if profile_url else f"<a>{name}</a>"
+        rows.append(f"<li><span class='js-name'>{anchor}</span></li>")
+    rows.append("</ul></body></html>")
+    return "\n".join(rows)
+
+
+def _discover_with_queryteacher_api(
+    query_url: str,
+    start_url: str,
+    department_name_zh: str,
+    school_name_zh: str,
+    seed_row_index: int,
+    max_pages_per_seed: int,
+    timeout: int,
+) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    session = requests.Session()
+
+    first_url = _set_query_param(query_url, "pageindex", "1")
+    response = session.get(first_url, timeout=timeout)
+    response.raise_for_status()
+    payload = response.json()
+    total_pages = int(payload.get("totalpage") or 1)
+    page_limit = min(max_pages_per_seed, max(1, total_pages))
+
+    for page_index in range(1, page_limit + 1):
+        page_url = _set_query_param(query_url, "pageindex", str(page_index))
+        if page_index == 1:
+            data = payload
+        else:
+            resp = session.get(page_url, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+
+        teacher_data = data.get("teacherData") if isinstance(data, dict) else None
+        teacher_list = teacher_data if isinstance(teacher_data, list) else []
+        html = _render_queryteacher_html(teacher_list)
+
+        slug = safe_slug(f"{school_name_zh}-{seed_row_index}-{page_index}")
+        html_path = PAGES_DIR / f"{slug}.html"
+        html_path.write_text(html, encoding="utf-8")
+
+        rows.append(
+            {
+                "department_name_zh": department_name_zh,
+                "school_name_zh": school_name_zh,
+                "seed_faculty_list_url": start_url,
+                "listing_page_url": page_url,
+                "page_index": page_index,
+                "seed_row_index": seed_row_index,
+                "html_path": str(html_path),
+                "crawl_date": today_str(),
+            }
+        )
+
+        if not teacher_list:
+            break
+
+    return rows
+
+
+def _extract_signature_from_page(page: Any) -> str:
+    try:
+        names = page.evaluate(
+            r"""() => {
+                const selectors = ['.js-name a', 'h3 a', '.teacher a', '.faculty a', 'a'];
+                const out = [];
+                const seen = new Set();
+                for (const selector of selectors) {
+                    for (const el of document.querySelectorAll(selector)) {
+                        const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+                        if (!text || seen.has(text)) continue;
+                        if (/^[\u4e00-\u9fff]{2,4}$/.test(text) || /^[A-Z][A-Za-z\-'.]*(?:\s+[A-Z][A-Za-z\-'.]*){1,2}$/.test(text)) {
+                            seen.add(text);
+                            out.push(text);
+                        }
+                    }
+                    if (out.length > 0 && selector !== 'a') break;
+                }
+                return out.slice(0, 20).join('|');
+            }"""
+        )
+        return str(names or "")
+    except Exception:
+        return ""
+
+
+def _has_rendered_name_nodes(page: Any) -> bool:
+    for selector in RENDERED_NAME_SELECTORS:
+        try:
+            if page.locator(selector).count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _wait_for_rendered_name_nodes(page: Any, timeout_ms: int) -> bool:
+    deadline = max(1, timeout_ms)
+    for selector in RENDERED_NAME_SELECTORS:
+        try:
+            page.wait_for_selector(selector, timeout=deadline, state="attached")
+            return True
+        except Exception:
+            continue
+    return _has_rendered_name_nodes(page)
+
+
+def _html_looks_unrendered(html: str) -> bool:
+    lowered = html.lower()
+    if any(marker.lower() in lowered for marker in UNRENDERED_TEMPLATE_MARKERS):
+        if not _collect_candidate_pairs(html, ""):
+            return True
+    return False
+
+
 def _click_next(page: Any) -> bool:
     for selector in NEXT_SELECTORS:
         locator = page.locator(selector)
@@ -347,6 +487,74 @@ def _click_next(page: Any) -> bool:
     return False
 
 
+def _click_next_dynamic(page: Any) -> bool:
+    clicked = _click_next(page)
+    if clicked:
+        return True
+
+    try:
+        return bool(
+            page.evaluate(
+                r"""() => {
+                    const elements = Array.from(document.querySelectorAll('a,span,button,li,div'));
+                    const isVisible = (el) => {
+                        const style = window.getComputedStyle(el);
+                        if (!style) return false;
+                        if (style.display === 'none' || style.visibility === 'hidden') return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    };
+                    const textHit = (text) => /^(下一页|下页|next|›|>>)$/i.test(text) || /(下一页|下页|next)/i.test(text);
+                    const idClassHit = (text) => /(nextpage|pagebarnext|pager-next|pagination-next)/i.test(text);
+
+                    for (const el of elements) {
+                        const text = (el.textContent || '').replace(/\s+/g, '').trim();
+                        const id = (el.id || '').toLowerCase();
+                        const cls = ((el.className || '') + '').toLowerCase();
+                        if (!(textHit(text) || idClassHit(id) || idClassHit(cls))) continue;
+                        if (!isVisible(el)) continue;
+                        try {
+                            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            if (typeof el.click === 'function') {
+                                el.click();
+                            }
+                            return true;
+                        } catch (e) {
+                            continue;
+                        }
+                    }
+                    return false;
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
+def _click_next_and_wait_change(page: Any, previous_signature: str, timeout_ms: int) -> bool:
+    if not _click_next_dynamic(page):
+        return False
+
+    page.wait_for_timeout(800)
+    wait_slice = max(800, min(timeout_ms, 5000))
+    attempts = max(2, timeout_ms // wait_slice)
+
+    for _ in range(attempts):
+        try:
+            page.wait_for_load_state("networkidle", timeout=wait_slice)
+        except Exception:
+            pass
+
+        if _wait_for_rendered_name_nodes(page, timeout_ms=wait_slice):
+            current_signature = _extract_signature_from_page(page)
+            if current_signature and current_signature != previous_signature:
+                return True
+        page.wait_for_timeout(500)
+
+    current_signature = _extract_signature_from_page(page)
+    return bool(current_signature and current_signature != previous_signature)
+
+
 def _discover_with_playwright(
     start_url: str,
     department_name_zh: str,
@@ -356,23 +564,65 @@ def _discover_with_playwright(
     timeout: int,
 ) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
+    headless = os.getenv("PLAYWRIGHT_HEADLESS", "1").strip() != "0"
+    queryteacher_urls: List[str] = []
 
     with sync_playwright() as p:  # type: ignore[misc]
         browser = None
+        launch_errors: List[str] = []
         try:
-            browser = p.chromium.launch(channel="chrome", headless=True)
-        except Exception:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(channel="chrome", headless=headless)
+        except Exception as exc:
+            launch_errors.append(f"system chrome launch failed: {exc}")
+        if browser is None:
+            try:
+                browser = p.chromium.launch(headless=headless)
+            except Exception as exc:
+                launch_errors.append(f"bundled chromium launch failed: {exc}")
+                raise RuntimeError(
+                    "Playwright browser launch failed. "
+                    "Tried system Chrome first, then bundled Chromium. "
+                    "Install Chrome or run 'python -m playwright install chromium'. "
+                    f"Details: {' | '.join(launch_errors)}"
+                )
 
         page = browser.new_page()
+        page.on(
+            "request",
+            lambda req: queryteacher_urls.append(req.url)
+            if "queryteacher.jsp" in str(req.url).lower()
+            else None,
+        )
         page.goto(start_url, wait_until="networkidle", timeout=timeout * 1000)
-        page.wait_for_timeout(1600)
+        page.wait_for_timeout(1200)
+
+        if queryteacher_urls: ## some sites(especially physics department) loads stuff via queryteacher.jsp. So special handling for that.
+            browser.close()
+            query_url = queryteacher_urls[-1]
+            return _discover_with_queryteacher_api(
+                query_url=query_url,
+                start_url=start_url,
+                department_name_zh=department_name_zh,
+                school_name_zh=school_name_zh,
+                seed_row_index=seed_row_index,
+                max_pages_per_seed=max_pages_per_seed,
+                timeout=timeout,
+            )
+
+        if not _wait_for_rendered_name_nodes(page, timeout_ms=timeout * 1000):
+            browser.close()
+            raise RuntimeError(f"Playwright loaded but no rendered teacher nodes found for: {start_url}")
 
         last_signature = ""
         repeat_count = 0
 
         for page_index in range(1, max_pages_per_seed + 1):
             html = page.content()
+            if _html_looks_unrendered(html):
+                browser.close()
+                raise RuntimeError(
+                    f"Detected unrendered template HTML on page {page_index} for: {page.url}"
+                )
             slug = safe_slug(f"{school_name_zh}-{seed_row_index}-{page_index}")
             html_path = PAGES_DIR / f"{slug}.html"
             html_path.write_text(html, encoding="utf-8")
@@ -400,8 +650,12 @@ def _discover_with_playwright(
             if repeat_count >= 2:
                 break
 
-            if not _click_next(page):
+            if not _click_next_and_wait_change(page, previous_signature=signature, timeout_ms=timeout * 1000):
                 break
+
+            if not _wait_for_rendered_name_nodes(page, timeout_ms=timeout * 1000):
+                browser.close()
+                raise RuntimeError(f"After clicking next, no rendered teacher nodes for: {page.url}")
 
         browser.close()
 
@@ -563,8 +817,8 @@ def run(
                 )
                 listing_rows_new.extend(rows)
                 continue
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"Phase1 Playwright discovery failed for {school_name_zh}: {exc}. Falling back to requests.")
 
         rows = _discover_with_requests(
             start_url=start_url,
