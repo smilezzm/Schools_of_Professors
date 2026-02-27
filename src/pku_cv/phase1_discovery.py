@@ -85,6 +85,31 @@ EN_STOPWORDS = {
 }
 JS_URL_RE = re.compile(r"(?:window\.location(?:\.href)?|location\.href|open)\s*\(??\s*['\"]([^'\"]+)['\"]")
 QUOTED_URL_RE = re.compile(r"['\"]((?:https?://|/|\.\./|\./)[^'\"\s<>]+)['\"]")
+PROFILE_LINK_TEXT_HINTS = {
+    "个人信息",
+    "个人主页",
+    "个人简历",
+    "个人简介",
+    "详细信息",
+    "详情",
+    "简历",
+    "主页",
+    "cv",
+    "resume",
+    "profile",
+}
+PROFILE_URL_BLACKLIST = {
+    "index",
+    "list",
+    "news",
+    "notice",
+    "home",
+    "about",
+    "faculty",
+    "teacher",
+    "szdw",
+    "jsdw",
+}
 NEXT_SELECTORS = [
     "#pageBarNextPageIdu12",
     "a:has-text('下一页')",
@@ -168,6 +193,31 @@ def _normalize_url_candidate(raw_url: str, page_url: str) -> str:
     return urljoin(page_url, url)
 
 
+def _is_profile_like_url(url: str) -> bool:
+    text = (url or "").strip().lower()
+    if not text:
+        return False
+    if any(flag in text for flag in ["javascript:", "mailto:", "tel:"]):
+        return False
+    if "#" in text and len(text) <= 2:
+        return False
+    return True
+
+
+def _is_probably_nav_url(url: str) -> bool:
+    text = (url or "").strip().lower()
+    if not text:
+        return True
+    return any(token in text for token in PROFILE_URL_BLACKLIST)
+
+
+def _link_text_has_profile_hint(text: str) -> bool:
+    lowered = _normalize_token(text).lower()
+    if not lowered:
+        return False
+    return any(hint in lowered for hint in PROFILE_LINK_TEXT_HINTS)
+
+
 def _extract_clickable_url_from_tag(tag: Any, page_url: str) -> str:
     attrs = getattr(tag, "attrs", {}) or {}
     for key in ["href", "data-href", "data-url", "data-link", "url", "link", "src"]:
@@ -192,6 +242,7 @@ def _extract_clickable_url_from_tag(tag: Any, page_url: str) -> str:
 
 def _find_profile_url_for_name(soup: BeautifulSoup, name: str, page_url: str) -> str:
     candidates: List[str] = []
+    keyword_candidates: List[str] = []
     for tag in soup.find_all(True):
         text = _normalize_token(tag.get_text(" ", strip=True) or "")
         if text != name and not (name in text and len(text) <= len(name) + 10):
@@ -199,16 +250,40 @@ def _find_profile_url_for_name(soup: BeautifulSoup, name: str, page_url: str) ->
 
         current = tag
         depth = 0
+        block = tag
         while current is not None and depth <= 3:
             url = _extract_clickable_url_from_tag(current, page_url)
             if url:
                 candidates.append(url)
+                if _is_profile_like_url(url) and not _is_probably_nav_url(url):
+                    keyword_candidates.append(url)
                 break
+            block = current
             current = current.parent
             depth += 1
 
+        for anchor in block.find_all("a") if block is not None else []:
+            link_text = _normalize_token(anchor.get_text(" ", strip=True) or "")
+            if not _link_text_has_profile_hint(link_text):
+                continue
+            href = _normalize_url_candidate(str(anchor.get("href") or ""), page_url)
+            if href and _is_profile_like_url(href):
+                keyword_candidates.append(href)
+
+        for clickable in block.find_all(True) if block is not None else []:
+            clickable_text = _normalize_token(clickable.get_text(" ", strip=True) or "")
+            if not _link_text_has_profile_hint(clickable_text):
+                continue
+            url = _extract_clickable_url_from_tag(clickable, page_url)
+            if url and _is_profile_like_url(url):
+                keyword_candidates.append(url)
+
+    for url in keyword_candidates:
+        if url and not _is_probably_nav_url(url):
+            return url
+
     for url in candidates:
-        if url:
+        if url and _is_profile_like_url(url):
             return url
     return ""
 

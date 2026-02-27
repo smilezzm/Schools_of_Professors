@@ -49,7 +49,7 @@ class DeepSeekClient:
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    def chat_json(self, prompt: str, temperature: float = 0.1) -> str:
+    def chat_json(self, prompt: str, temperature: float = 0.05) -> str:
         if not self.enabled:
             raise RuntimeError("DEEPSEEK_API_KEY is not configured")
 
