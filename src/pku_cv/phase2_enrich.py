@@ -7,6 +7,15 @@ from .deepseek_client import DeepSeekClient
 from .utils import parse_json_obj, read_jsonl, today_str, write_jsonl
 
 
+def _completion_status(row: Dict[str, object]) -> str:
+    bs_school = str(row.get("bs_school", "")).strip()
+    phd_school = str(row.get("phd_school", "")).strip()
+    join_pku_year = str(row.get("join_pku_year", "")).strip()
+    if bs_school and phd_school and join_pku_year:
+        return "complete"
+    return "incomplete"
+
+
 def _default_enriched(row: Dict[str, object]) -> Dict[str, object]:
     return {
         "department_name_zh": row.get("department_name_zh", ""),
@@ -32,16 +41,16 @@ def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, obj
 
     identity = result["name_zh"] or result["name_en"]
     prompt = (
-        "请基于公开网页检索信息，抽取北京大学教师信息。"
+        "请基于北京大学教师主页检索信息，给出北京大学教师信息。"
         "输出JSON对象，字段必须完整："
-        "name_en,title,profile_url,bs_school,ms_school,phd_school,join_pku_year,status,notes。"
+        "name_en,title,profile_url,bs_school,ms_school,phd_school,join_pku_year,notes。"
         "如果不确定请留空字符串，不要编造。"
         "profile_url 需要通过检索给出最可信的教师个人主页或官方简介页面链接。"
         f"\n姓名: {identity}"
         f"\n中文姓名: {result['name_zh']}"
         f"\n英文姓名: {result['name_en']}"
-        f"\n院系: {result['department_name_zh']}"
-        f"\n单位: {result['school_name_zh']}"
+        f"\n学部: {result['department_name_zh']}"
+        f"\n学院: {result['school_name_zh']}"
     )
     try:
         text = client.chat_json(prompt, temperature=0.05)
@@ -58,14 +67,12 @@ def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, obj
         "ms_school",
         "phd_school",
         "join_pku_year",
-        "status",
         "notes",
     ]:
         value = payload.get(key, "")
         result[key] = str(value).strip() if value is not None else ""
 
-    if not result["status"]:
-        result["status"] = "incomplete"
+    result["status"] = _completion_status(result)
     return result
 
 
@@ -99,6 +106,8 @@ def run(limit: Optional[int] = None, resume: bool = True) -> None:
     for row in new_rows:
         merged_map[_row_key(row)] = row
     enriched_rows = list(merged_map.values())
+    for row in enriched_rows:
+        row["status"] = _completion_status(row)
 
     write_jsonl(ENRICHED_JSONL, enriched_rows)
     print(f"Phase2 finished: new={len(new_rows)}, total={len(enriched_rows)}")
