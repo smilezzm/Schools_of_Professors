@@ -23,7 +23,6 @@ def _default_enriched(row: Dict[str, object]) -> Dict[str, object]:
         "school_name_zh": row.get("school_name_zh", ""),
         "name_zh": row.get("name_zh", ""),
         "name_en": row.get("name_en", ""),
-        "seed_faculty_list_url": row.get("seed_faculty_list_url", ""),
         "title": "",
         "profile_url": "",
         "bs_school": "",
@@ -53,7 +52,6 @@ def _enrich_one(row: Dict[str, object], client: DeepSeekClient) -> Dict[str, obj
         f"\n姓名: {identity}"
         f"\n学部: {result['department_name_zh']}"
         f"\n学院: {result['school_name_zh']}"
-        f"\n学院教师列表参考URL: {result['seed_faculty_list_url']}"
     )
     try:
         text = client.chat_json(prompt, temperature=0.05)
