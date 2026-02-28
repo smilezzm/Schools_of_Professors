@@ -1,7 +1,8 @@
 # School_of_Professor
 
 Phase-based pipeline to collect PKU professor information from school seed URLs, enrich profile data, normalize institution names, and export a final CSV aligned to `professors_template.csv`.
-
+![](figures/overall_graduation_top10.png)
+![](figures/bs_to_phd_sankey.png)
 ---
 
 ## 1) What this repo does
