@@ -69,7 +69,13 @@ School_of_Professor/
 
 ## 3.1 Python env (recommended)
 
-Use the repo virtualenv Python explicitly (important for Playwright and consistent behavior):
+If `.venv` does not exist yet, create it first:
+
+```powershell
+python -m venv .venv
+```
+
+Then verify the virtualenv interpreter:
 
 ```powershell
 .venv\Scripts\python.exe --version
@@ -79,13 +85,42 @@ If needed, install dependencies in this env:
 
 ```powershell
 .venv\Scripts\python.exe -m pip install -U pip
-.venv\Scripts\python.exe -m pip install requests beautifulsoup4 playwright python-dotenv
-.venv\Scripts\python.exe -m playwright install chromium
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m playwright install chromium 
 ```
+where 
+```
+.venv\Scripts\python.exe -m playwright install chromium 
+```
+may take some time. If there is chrome on your system, you can skip this installation and install it only when failures occur:
+```
+"Playwright browser launch failed. "
+"Tried system Chrome first, then bundled Chromium. "
+"Install Chrome or run 'python -m playwright install chromium'. "
+```
+
+Optional (activate venv in terminal first, then use plain `python`):
+
+```powershell
+.venv\Scripts\activate
+python --version
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+If you do not want to use a venv, you can use system Python directly:
+
+```powershell
+python --version
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+But venv is recommended to avoid dependency/version conflicts.
 
 ## 3.2 DeepSeek key (optional but recommended)
 
-Put API key in `.env` (repo root):
+Put API key in `.env` (repo root), if there is no file named `.env`, create one:
 
 ```env
 DEEPSEEK_API_KEY=your_key
