@@ -86,6 +86,31 @@ def _map_with_deepseek(name: str, client: DeepSeekClient) -> Tuple[str, float, s
         return "", 0.0, f"deepseek_error: {exc}"
 
 
+def _load_manual_overrides() -> Dict[Tuple[str, str], str]:
+    overrides: Dict[Tuple[str, str], str] = {}
+    if not NORMALIZATION_REVIEW_JSONL.exists():
+        return overrides
+
+    rows = read_jsonl(NORMALIZATION_REVIEW_JSONL)
+    for row in rows:
+        field = str(row.get("field", "")).strip()
+        original_value = str(row.get("original_value", "")).strip()
+        if not field or not original_value:
+            continue
+
+        manual_abbr = (
+            str(row.get("manual_abbr") or "").strip()
+            or str(row.get("resolved_abbr") or "").strip()
+            or str(row.get("canonical_abbr") or "").strip()
+        )
+        manual_abbr = manual_abbr.upper()
+        if not manual_abbr:
+            continue
+
+        overrides[(field, original_value)] = manual_abbr
+    return overrides
+
+
 def _normalize_field(
     source_value: str,
     alias_map: Dict[str, str],
@@ -94,10 +119,16 @@ def _normalize_field(
     row_key: str,
     field_name: str,
     value_cache: Dict[str, str],
+    manual_overrides: Dict[Tuple[str, str], str],
 ) -> str:
     source_value = (source_value or "").strip()
     if not source_value:
         return ""
+
+    manual = manual_overrides.get((field_name, source_value))
+    if manual:
+        value_cache[source_value] = manual
+        return manual
 
     if source_value in value_cache:
         return value_cache[source_value]
@@ -150,6 +181,7 @@ def run(limit: Optional[int] = None, resume: bool = True) -> None:
 
     client = DeepSeekClient()
     alias_map = _load_alias_map()
+    manual_overrides = _load_manual_overrides()
     review_rows: List[Dict[str, object]] = []
     normalized_rows_new: List[Dict[str, object]] = []
     value_cache: Dict[str, str] = {}
@@ -174,6 +206,7 @@ def run(limit: Optional[int] = None, resume: bool = True) -> None:
                 row_key=row_identity,
                 field_name=field,
                 value_cache=value_cache,
+                manual_overrides=manual_overrides,
             )
         normalized_rows_new.append(normalized)
 
