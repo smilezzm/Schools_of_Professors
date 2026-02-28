@@ -359,3 +359,36 @@ Apply manual edits:
 .venv\Scripts\python.exe run_pipeline.py phase3 --no-resume
 .venv\Scripts\python.exe run_pipeline.py export
 ```
+
+---
+
+## 9) Visualization (brief)
+
+Visualization scripts are in `visualization/`, and figures are saved to `figures/`.
+
+- Graduation top-10 per seed + overall (`BS/MS/PhD`, with coverage text):
+
+```powershell
+.venv\Scripts\python.exe visualization/plot_graduation_schools.py
+```
+
+- Sankey (`BS -> PhD`) for all professors with both schools collected (with included/total ratio text):
+
+```powershell
+.venv\Scripts\python.exe visualization/plot_bs_to_phd_sankey.py
+```
+
+- Top-5 seeds by PKU ratio for `BS/MS/PhD` (denominator = collected cases only):
+
+```powershell
+.venv\Scripts\python.exe visualization/plot_top5_pku_ratio.py
+```
+
+Key outputs include:
+- `figures/per_seed/*.png`
+- `figures/overall_graduation_top10.png`
+- `figures/bs_to_phd_sankey.html`
+- `figures/bs_to_phd_sankey.png`
+- `figures/top5_pku_ratio_bs_school.png`
+- `figures/top5_pku_ratio_ms_school.png`
+- `figures/top5_pku_ratio_phd_school.png`
