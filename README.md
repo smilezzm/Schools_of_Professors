@@ -1,6 +1,6 @@
 # School_of_Professor
 
-Phase-based pipeline to collect PKU professor information from school seed URLs, enrich profile data, normalize institution names, and export a final CSV aligned to `professors_template.csv`.
+Phase-based pipeline to collect PKU professor information from school seed URLs, enrich profile data, normalize institution names, and export a final CSV aligned to `professors_template.csv`. By adjusting the file `schools_seed.csv`, putting the web link to the departmental collection of professors, it can be used on any department at any university.
 ![](figures/overall_graduation_top10.png)
 ![](figures/bs_to_phd_sankey.png)
 ---
@@ -8,7 +8,7 @@ Phase-based pipeline to collect PKU professor information from school seed URLs,
 ## 1) What this repo does
 
 Input:
-- `schools_seed.csv`: school/faculty list seeds (one row per school unit)
+- `schools_seed.csv`: school/faculty list seeds (one row per school unit). This can be adjusted according to the examples inside, so that we can glean the information of professors from any department at any university, although it's originally made for Peking University.
 - `professors_template.csv`: required output column schema (This is already given and not reconfigureable)
 
 Pipeline:
